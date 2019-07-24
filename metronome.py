@@ -5,11 +5,13 @@ import sys
 import threading
 import time
 
+from typing import List, Union
+
 from playsound import playsound
 
 
 # Boolean flag to handle debug output
-DEBUG = False
+DEBUG = True
 
 MIN_BPM = 30
 MAX_BPM = 300
