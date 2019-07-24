@@ -4,8 +4,7 @@ import psutil
 import sys
 import threading
 import time
-
-from playsound import playsound
+import winsound
 
 
 # Boolean flag to handle debug output
@@ -38,6 +37,12 @@ class ClickTrack(threading.Thread):
         super().__init__()
 
         self.beat_length_ms = (60.0 / float(bpm)) / MILLISECOND
+
+        # Load the audio file into memory to minimize latency
+        self.beep = None
+        with open('beep_main.wav', 'rb') as file:
+            self.beep = file.read()
+
         self.ticks = list()
 
         self.do_stop = False
@@ -76,11 +81,15 @@ class ClickTrack(threading.Thread):
             # First convert the list of timestamps to a list of differences.
             # We want to keep logic at a minimum during thread execution
             _differences = list()
+            # Ignore last beat
             for index, tick in enumerate(self.ticks[:-1]):
-                _differences.append(self.ticks[index+1] - tick)
+                _differences.append(
+                    abs(self.ticks[index + 1] - tick)
+                )
 
             debug_print('*'*60)
-            debug_print('Statistics: ')
+            debug_print('Statistics: (First beat ignored)')
+            _differences = _differences[1:]
 
             debug_print('All times in milliseconds')
             debug_print(f'Beat length: {self.beat_length_ms}')
@@ -88,15 +97,14 @@ class ClickTrack(threading.Thread):
             total = 0  # Used to compute average deviation
             max_deviation = 0
 
-            for tick in _differences:
-                # debug_print(tick)
-                deviation = tick - self.beat_length_ms
+            for difference in _differences:
+                deviation = abs(difference - self.beat_length_ms)
                 total += deviation
-                if abs(deviation) > max_deviation:
+                if deviation > max_deviation:
                     max_deviation = deviation
 
             debug_print(f'Total ticks: {len(self.ticks)}')
-            debug_print(f'Average deviation: {total / len(self.ticks)}')
+            debug_print(f'Average deviation: {total / len(_differences)}')
             debug_print(f'Maximum deviation: {max_deviation}')
             debug_print('*'*60)
 
@@ -104,12 +112,19 @@ class ClickTrack(threading.Thread):
         """
         Handle the beat
 
+            NOTE: There is a large (approximately 50 ms) delay between the
+            first and second call to winsound.PlaySound. There doesn't appear
+            to be anything we can do about it.
+
         :return: The time of the tick
         """
-        prev = self._get_time_ms()
-        playsound('beep_main.wav')
-        self._handle_externals(prev)
-        return prev
+        time_ms = self._get_time_ms()
+
+        winsound.PlaySound(self.beep, winsound.SND_MEMORY)
+        # We're sending in the time including audio file delay for debug info
+        self._handle_externals(self._get_time_ms())
+
+        return time_ms
 
     def run(self) -> None:
         """
@@ -118,17 +133,21 @@ class ClickTrack(threading.Thread):
 
         :return: None
         """
-        # First things first, let's tick.
-        prev = self._tick()
-
-        # Let's define the thread variables
-        cushion = 10
 
         # Let's perform platform specific operations
         if platform.system() == 'Windows':
             # If we're running on Windows, give this process a high priority
+            debug_print('Elevating Windows priority')
             p = psutil.Process(os.getpid())
             p.nice(psutil.HIGH_PRIORITY_CLASS)
+
+        # First things first. Let's tick.
+        # tick_current = self._tick()
+        # tick_next = tick_current + self.beat_length_ms
+        tick_next = 0
+
+        # Let's define the thread variables
+        cushion = 10 * MILLISECOND
 
         while not self.do_stop:
             """
@@ -137,18 +156,19 @@ class ClickTrack(threading.Thread):
             sleep to within some cushion number of milliseconds to the next 
             beat before starting to busy wait.
             """
-            time.sleep(
-                (self.beat_length_ms - (self._get_time_ms() - prev) - cushion)
-                * MILLISECOND
-            )
 
             # We want to get as close as possible, so let's busy wait
-            while self._get_time_ms() < (prev + self.beat_length_ms):
+            while self._get_time_ms() < tick_next:
                 pass
 
             # This is at the end of the loop so the actual condition checking
             # is incorporated into the wait time.
-            prev = self._tick()
+            tick_current = self._tick()
+            tick_next = tick_current + self.beat_length_ms
+
+            time.sleep(
+                (tick_next - cushion - self._get_time_ms()) * MILLISECOND
+            )
 
         self._print_statistics()
 
